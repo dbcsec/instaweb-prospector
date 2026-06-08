@@ -4,18 +4,39 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const { system, messages, max_tokens } = req.body;
+
+    // Build Groq-compatible request (OpenAI format)
+    const groqMessages = [];
+    if (system) groqMessages.push({ role: "system", content: system });
+    groqMessages.push(...messages);
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
       },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: groqMessages,
+        max_tokens: max_tokens || 1000,
+        temperature: 0.7,
+      }),
     });
 
     const data = await response.json();
-    return res.status(200).json(data);
+
+    if (data.error) {
+      return res.status(400).json({ error: data.error.message });
+    }
+
+    // Convert Groq response to Anthropic format so app code doesn't need to change
+    const text = data.choices?.[0]?.message?.content || "";
+    return res.status(200).json({
+      content: [{ type: "text", text }]
+    });
+
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
