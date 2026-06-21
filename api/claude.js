@@ -6,7 +6,6 @@ export default async function handler(req, res) {
   try {
     const { system, messages, max_tokens } = req.body;
 
-    // Build Groq-compatible request (OpenAI format)
     const groqMessages = [];
     if (system) groqMessages.push({ role: "system", content: system });
     groqMessages.push(...messages);
@@ -18,7 +17,7 @@ export default async function handler(req, res) {
         "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
+        model: "openai/gpt-oss-120b",
         messages: groqMessages,
         max_tokens: max_tokens || 1000,
         temperature: 0.7,
@@ -31,7 +30,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: data.error.message });
     }
 
-    // Convert Groq response to Anthropic format so app code doesn't need to change
     const text = data.choices?.[0]?.message?.content || "";
     return res.status(200).json({
       content: [{ type: "text", text }]
