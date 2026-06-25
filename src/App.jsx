@@ -52,10 +52,31 @@ const callClaude = async (prompt, system, maxTokens = 1000, retries = 3) => {
 };
 
 const callClaudeJSON = async (prompt, system) => {
-  const raw = await callClaude(prompt, system, 1000);
-  const match = raw.replace(/```json|```/g, "").match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("No JSON in response: " + raw.slice(0, 100));
-  return JSON.parse(match[0]);
+  const raw = await callClaude(prompt, system, 1500);
+  const cleaned = raw.replace(/```json|```/g, "");
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      // Fell through to repair below if parse fails on a malformed-but-present object
+    }
+  }
+  // Try to repair a truncated object: take from the first { to the end,
+  // then trim back to the last fully-closed field and close the braces.
+  const startIdx = cleaned.indexOf("{");
+  if (startIdx !== -1) {
+    let candidate = cleaned.slice(startIdx);
+    // Trim to the last comma before the cut-off, then close the object
+    const lastComma = candidate.lastIndexOf(",");
+    if (lastComma > 0) {
+      candidate = candidate.slice(0, lastComma) + "}";
+      try {
+        return JSON.parse(candidate);
+      } catch {}
+    }
+  }
+  throw new Error("No JSON in response: " + raw.slice(0, 150));
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
