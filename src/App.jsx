@@ -23,7 +23,9 @@ const buildDemoLink = (lead) => {
 };
 
 // ─── Claude API via Vercel proxy ──────────────────────────────────────────────
-const callClaude = async (prompt, system, maxTokens = 1000) => {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const callClaude = async (prompt, system, maxTokens = 1000, retries = 3) => {
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -34,7 +36,18 @@ const callClaude = async (prompt, system, maxTokens = 1000) => {
     }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error);
+  if (data.error) {
+    // Detect rate limit error and auto-retry with backoff
+    const isRateLimit = /rate limit/i.test(data.error);
+    if (isRateLimit && retries > 0) {
+      // Parse suggested wait time if present, e.g. "try again in 9.045s"
+      const waitMatch = data.error.match(/try again in ([\d.]+)s/i);
+      const waitMs = waitMatch ? Math.ceil(parseFloat(waitMatch[1]) * 1000) + 500 : 4000;
+      await sleep(waitMs);
+      return callClaude(prompt, system, maxTokens, retries - 1);
+    }
+    throw new Error(data.error);
+  }
   return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
 };
 
@@ -207,7 +220,7 @@ export default function App() {
         found++;
         setAgentCount(found);
         addLog("success", `  ✅ Added with live demo! (${found}/${agentTarget}) — "${bizName}"`);
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 2500));
       } catch(e) {
         addLog("warn", `  ↳ Error: ${e.message}`);
       }
@@ -304,7 +317,7 @@ export default function App() {
         }, ...prev]);
         setBulkProgress({ done: i+1, total: names.length });
         addBulkLog("success", `  ✅ Added with live demo! — "${name}"`);
-        await new Promise(r => setTimeout(r, 700));
+        await new Promise(r => setTimeout(r, 2500));
       } catch(e) {
         addBulkLog("warn", `  ↳ Error scoring "${name}": ${e.message}`);
         setBulkProgress(p => ({...p, done: i+1}));
