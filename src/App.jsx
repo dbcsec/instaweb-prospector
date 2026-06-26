@@ -82,12 +82,13 @@ const callClaudeJSON = async (prompt, system) => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const scoreColor = (s) => s >= 80 ? "#D85A30" : s >= 60 ? "#EF9F27" : s >= 40 ? "#378ADD" : "#6b7280";
 const scoreLabel = (s) => s >= 80 ? "🔥 Hot Target" : s >= 60 ? "⚡ Good Target" : s >= 40 ? "🔍 Possible" : "✓ Covered";
-const STATUSES = ["New","Demo Built","Outreach Sent","Negotiating","Closed","Lost"];
+const STATUSES = ["New","Demo Built","Outreach Sent","Negotiating","Active","Closed","Lost"];
 const statusStyle = {
   "New":           { bg:"rgba(107,114,128,0.15)", txt:"#9ca3af" },
   "Demo Built":    { bg:"rgba(55,138,221,0.15)",  txt:"#60a5fa" },
   "Outreach Sent": { bg:"rgba(239,159,39,0.15)",  txt:"#fbbf24" },
   "Negotiating":   { bg:"rgba(127,119,221,0.15)", txt:"#a78bfa" },
+  "Active":        { bg:"rgba(16,185,129,0.18)",  txt:"#10b981" },
   "Closed":        { bg:"rgba(29,158,117,0.15)",  txt:"#34d399" },
   "Lost":          { bg:"rgba(216,90,48,0.15)",   txt:"#f87171" },
 };
@@ -183,8 +184,10 @@ export default function App() {
     return { subject, body };
   };
 
-  const sendRealEmail = async (toEmail, emailText) => {
+  const sendRealEmail = async (toEmail, emailText, businessName) => {
     const { subject, body } = parseEmailParts(emailText);
+
+    // Send the initial email immediately
     const res = await fetch("/api/send-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -192,6 +195,21 @@ export default function App() {
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || "Send failed");
+
+    // Fire-and-forget the 3-day follow-up via Resend's scheduling
+    const followUpSubject = `Following up — ${businessName || "your new website"}`;
+    const followUpBody = `Hi,\n\nJust following up on the demo site we built for ${businessName || "your business"} a few days ago.\n\nNo pressure at all — just wanted to check if you had a chance to look at it, or if you have any questions about getting it live.\n\n${body.includes("See your demo") ? body.split("See your demo")[1] ? "See your demo" + body.split("See your demo")[1].split("\n")[0] : "" : ""}\n\n— The Instaweb Team\nhello@instaweb.agency · instaweb.agency`;
+
+    try {
+      await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: toEmail, subject: followUpSubject, text: followUpBody, scheduledAt: "in 3 days" }),
+      });
+    } catch {
+      // Follow-up scheduling failure shouldn't block the main send confirmation
+    }
+
     return data;
   };
 
@@ -355,10 +373,13 @@ export default function App() {
     return (!s || l.name.toLowerCase().includes(s) || l.city.toLowerCase().includes(s))
       && (pipelineFilter === "All" || l.status === pipelineFilter);
   });
+  const activeCount = pipeline.filter(l => l.status==="Active").length;
   const closedCount = pipeline.filter(l => l.status==="Closed").length;
+  const totalSold = activeCount + closedCount;
   const hotCount = pipeline.filter(l => l.score >= 80).length;
   const demoCount = pipeline.filter(l => l.demoLink).length;
-  const projMRR = closedCount * 99 + Math.floor(closedCount * 0.5) * 149;
+  const projMRR = activeCount * 99 + Math.floor(activeCount * 0.4) * 149;
+  const totalOneTimeRevenue = totalSold * 399;
 
   // ─── Styles ────────────────────────────────────────────────────────────────
   const C = { bg:"#0d0d0f", surf:"#16161a", surf2:"#1c1c22", border:"rgba(255,255,255,0.07)", border2:"rgba(255,255,255,0.12)", text:"#f0ede8", muted:"#6b7280", accent:"#1D9E75", accentDim:"rgba(29,158,117,0.12)" };
@@ -513,8 +534,8 @@ export default function App() {
                           onClick={async () => {
                             setSendingEmail(true); setSendStatus(null);
                             try {
-                              await sendRealEmail(recipientEmail.trim(), manualEmail);
-                              setSendStatus({ ok: true, msg: `✅ Sent to ${recipientEmail.trim()}` });
+                              await sendRealEmail(recipientEmail.trim(), manualEmail, manualResult?.name);
+                              setSendStatus({ ok: true, msg: `✅ Sent to ${recipientEmail.trim()} · follow-up scheduled in 3 days` });
                             } catch(e) {
                               setSendStatus({ ok: false, msg: `❌ ${e.message}` });
                             }
@@ -565,7 +586,7 @@ export default function App() {
         {tab==="pipeline" && (
           <div>
             <div style={{...s.g3,marginBottom:12}}>
-              {[["Total",pipeline.length,C.text],["🔥 Hot",hotCount,"#D85A30"],["Demos Live",demoCount,"#60a5fa"],["Closed",closedCount,"#34d399"],["Proj. MRR",`$${projMRR.toLocaleString()}`,C.accent],["No Website",pipeline.filter(l=>!l.hasWebsite).length,"#fbbf24"]].map(([label,val,col])=>(
+              {[["Total",pipeline.length,C.text],["🔥 Hot",hotCount,"#D85A30"],["Demos Live",demoCount,"#60a5fa"],["Active (MRR)",activeCount,"#10b981"],["Closed (one-time)",closedCount,"#34d399"],["Proj. MRR",`$${projMRR.toLocaleString()}`,C.accent]].map(([label,val,col])=>(
                 <div key={label} style={s.mc}><div style={{fontSize:20,fontWeight:300,fontFamily:"'DM Serif Display',serif",color:col}}>{val}</div><div style={{fontSize:11,color:C.muted,marginTop:5}}>{label}</div></div>
               ))}
             </div>
@@ -597,6 +618,31 @@ export default function App() {
                           <details style={{marginTop:6}}>
                             <summary style={{fontSize:11,color:"#a78bfa",cursor:"pointer"}}>View outreach email</summary>
                             <div style={{marginTop:6,fontSize:12,background:C.surf2,borderRadius:8,padding:"10px 12px",whiteSpace:"pre-wrap",lineHeight:1.7,color:C.muted,maxHeight:200,overflowY:"auto"}}>{lead.email}</div>
+                            <div style={{marginTop:8,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                              <input
+                                style={{...s.inp,flex:1,minWidth:160,fontSize:12,padding:"6px 10px"}}
+                                placeholder="prospect@email.com"
+                                value={lead.recipientEmail || ""}
+                                onChange={e=>updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,recipientEmail:e.target.value}:l))}
+                              />
+                              <button
+                                style={{...s.ghost,fontSize:11,color:"#60a5fa",opacity:lead._sending?0.6:1}}
+                                disabled={lead._sending || !lead.recipientEmail?.trim()}
+                                onClick={async ()=>{
+                                  updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:true,_sendStatus:null}:l));
+                                  try {
+                                    await sendRealEmail(lead.recipientEmail.trim(), lead.email, lead.name);
+                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"✅ Sent + follow-up in 3d",status: l.status==="New"||l.status==="Demo Built" ? "Outreach Sent" : l.status}:l));
+                                  } catch(e) {
+                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"❌ "+e.message}:l));
+                                  }
+                                }}
+                              >
+                                {lead._sending ? "📤 Sending..." : "📤 Send"}
+                              </button>
+                              <button style={{...s.ghost,fontSize:11}} onClick={()=>navigator.clipboard?.writeText(lead.email)}>📋</button>
+                              {lead._sendStatus && <span style={{fontSize:11,color:lead._sendStatus.startsWith("✅")?"#34d399":"#f87171"}}>{lead._sendStatus}</span>}
+                            </div>
                           </details>
                         )}
                       </div>
