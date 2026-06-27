@@ -25,6 +25,42 @@ const buildDemoLink = (lead) => {
 // ─── Claude API via Vercel proxy ──────────────────────────────────────────────
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+const realWebSearch = async (query) => {
+  try {
+    const res = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    if (data.error) return { results: [], knowledgeGraph: null, error: data.error };
+    return data;
+  } catch (e) {
+    return { results: [], knowledgeGraph: null, error: e.message };
+  }
+};
+
+const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+
+// Safety net: only trust an email if it literally appears in the raw search text.
+// This guards against the model inventing one despite instructions.
+const extractRealEmail = (searchText) => {
+  const matches = (searchText || "").match(EMAIL_REGEX);
+  if (!matches || !matches.length) return null;
+  // Filter out common false positives (image filenames, tracking pixels, etc.)
+  const filtered = matches.filter(m =>
+    !/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(m) &&
+    !/^(no-?reply|donotreply|example)@/i.test(m)
+  );
+  return filtered[0] || null;
+};
+
+const verifyEmailInSearchResults = (claimedEmail, searchData) => {
+  if (!claimedEmail) return null;
+  const allText = JSON.stringify(searchData);
+  return allText.includes(claimedEmail) ? claimedEmail : null;
+};
+
 const callClaude = async (prompt, system, maxTokens = 1000, retries = 3) => {
   const res = await fetch("/api/claude", {
     method: "POST",
@@ -52,7 +88,7 @@ const callClaude = async (prompt, system, maxTokens = 1000, retries = 3) => {
 };
 
 const callClaudeJSON = async (prompt, system) => {
-  const raw = await callClaude(prompt, system, 1500);
+  const raw = await callClaude(prompt, system, 2000);
   const cleaned = raw.replace(/```json|```/g, "");
   const match = cleaned.match(/\{[\s\S]*\}/);
   if (match) {
@@ -95,7 +131,7 @@ const statusStyle = {
 const NICHES = ["Roofing","HVAC","Plumbing","Pest Control","Electrical","Landscaping","Painting","Gutters","Concrete","Windows"];
 const CITIES = ["Portland OR","Beaverton OR","Hillsboro OR","Gresham OR","Lake Oswego OR","Tigard OR","Oregon City OR","Milwaukie OR","Tualatin OR","Vancouver WA"];
 
-const SCORE_SYSTEM = `You are a web presence analyst for Instaweb, a digital agency that sells $399 websites to local trade businesses. You will be given a business name, city, and industry. Using your knowledge of local business web presence patterns, estimate their online presence and return a JSON object. RULES: Respond with ONLY a JSON object. No text before or after. No markdown. No explanation. If you don't know the specific business, make a realistic estimate based on typical businesses of that type in that city. Small local trade companies typically have weak web presence. Return exactly this structure: {"score":75,"hasWebsite":false,"websiteUrl":null,"websiteAge":null,"mobileScore":35,"googleRating":3.8,"reviewCount":12,"hasGMB":true,"socialPresence":"weak","redFlags":["No website found","Google listing has no photos","Last review was 2 years ago"],"pitch":"Your competitors are winning jobs online while you rely on word of mouth.","summary":"This business operates purely on referrals with no web presence. A modern site would immediately differentiate them."} Score: start at 0, +40 no website, +20 site pre-2018, +15 no GMB, +15 mobile<50, +10 rating<3, +10 no social. Cap 100.`;
+const SCORE_SYSTEM = `You are a web presence analyst for Instaweb, a digital agency that sells $399 websites to local trade businesses. You will be given a business name, city, industry, and REAL web search results for that business. Analyze the search results to determine their actual online presence — do not guess or invent facts not supported by the search results. RULES: Respond with ONLY a JSON object. No text before or after. No markdown. No explanation. If the search results are empty or don't clearly identify the business, set hasWebsite, hasGMB, email, etc. based on absence of evidence (do not invent a plausible business). Return exactly this structure: {"score":75,"hasWebsite":false,"websiteUrl":null,"websiteAge":null,"mobileScore":35,"googleRating":3.8,"reviewCount":12,"hasGMB":true,"socialPresence":"weak","email":null,"redFlags":["No website found","Google listing has no photos","Last review was 2 years ago"],"pitch":"Your competitors are winning jobs online while you rely on word of mouth.","summary":"This business operates purely on referrals with no web presence. A modern site would immediately differentiate them."} CRITICAL RULE FOR EMAIL: only set "email" to a value if a real, complete email address actually appears in the search results text (e.g. info@business.com). If no email appears anywhere in the provided search results, you MUST set "email": null. Never invent, guess, or pattern-match an email address. Score: start at 0, +40 no website, +20 site pre-2018, +15 no GMB, +15 mobile<50, +10 rating<3, +10 no social. Cap 100.`;
 
 const EMAIL_SYSTEM = `You write cold outreach emails for Instaweb (instaweb.agency), a digital agency that builds $399 websites for local trades. Rules: Respond with ONLY the email text. Nothing else. Tone: confident, peer-to-peer, not salesy. Under 150 words. Structure: Subject line, then 3 short paragraphs, then a line that says exactly "See your demo: {{DEMO_LINK}}" (keep that placeholder literally as written, do not replace it), then sign-off. Format: Subject: [subject]\\n\\n[para 1: we built a free demo]\\n\\n[para 2: one specific gap referencing red flags]\\n\\n[para 3: the offer - $399 setup, $99/mo care plan, limited spots]\\n\\nSee your demo: {{DEMO_LINK}}\\n\\n— The Instaweb Team\\nhello@instaweb.agency · instaweb.agency`;
 
@@ -133,6 +169,8 @@ export default function App() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [sendingEmail, setSendingEmail] = useState(false);
   const [sendStatus, setSendStatus] = useState(null);
+  const [manualWasSent, setManualWasSent] = useState(false);
+  const [manualSentTo, setManualSentTo] = useState("");
 
   const [bulkText, setBulkText] = useState("");
   const [bulkRunning, setBulkRunning] = useState(false);
@@ -275,12 +313,18 @@ export default function App() {
   const scoreManual = async () => {
     if (!manualName.trim()) return;
     setManualScoring(true); setManualResult(null); setManualEmail(null); setManualDemoLink(null);
+    setManualWasSent(false); setManualSentTo(""); setSendStatus(null); setRecipientEmail("");
     try {
+      const searchData = await realWebSearch(`${manualName} ${settings.city} contact email website`);
+      const searchContext = JSON.stringify(searchData.results || []);
       const data = await callClaudeJSON(
-        `Business name: "${manualName}"\nCity: ${settings.city}\nIndustry: ${settings.niche}\n\nAnalyze their likely web presence and return the JSON object.`,
+        `Business name: "${manualName}"\nCity: ${settings.city}\nIndustry: ${settings.niche}\n\nReal web search results for this business:\n${searchContext}\n\nAnalyze these REAL search results and return the JSON object. Remember: only include an email if it literally appears in the search results above.`,
         SCORE_SYSTEM
       );
-      setManualResult({ ...data, name: manualName, city: settings.city, niche: settings.niche, phone: manualPhone });
+      // Defense in depth: verify any claimed email actually appears in the raw search data
+      const verifiedEmail = verifyEmailInSearchResults(data.email, searchData);
+      setManualResult({ ...data, email: verifiedEmail, name: manualName, city: settings.city, niche: settings.niche, phone: manualPhone });
+      if (verifiedEmail) setRecipientEmail(verifiedEmail);
     } catch(e) { alert("Scoring failed: " + e.message); }
     setManualScoring(false);
   };
@@ -306,11 +350,14 @@ export default function App() {
     updatePipeline(prev => [{
       id: Date.now(), ...manualResult,
       email: manualEmail || null, demoLink: manualDemoLink || buildDemoLink(manualResult),
-      status: manualDemoLink ? "Demo Built" : "New", source:"Manual",
+      status: manualWasSent ? "Outreach Sent" : (manualDemoLink ? "Demo Built" : "New"),
+      recipientEmail: manualSentTo || "",
+      source:"Manual",
       addedAt: new Date().toISOString(),
     }, ...prev]);
     setManualResult(null); setManualEmail(null); setManualDemoLink(null);
-    setManualName(""); setManualPhone("");
+    setManualName(""); setManualPhone(""); setManualWasSent(false); setManualSentTo("");
+    setRecipientEmail(""); setSendStatus(null);
     setTab("pipeline");
   };
 
@@ -332,14 +379,18 @@ export default function App() {
       const name = names[i];
       addBulkLog("search", `[${i+1}/${names.length}] Scoring: "${name}"...`);
       try {
+        const searchData = await realWebSearch(`${name} ${settings.city} contact email website`);
+        const searchContext = JSON.stringify(searchData.results || []);
         const scoreData = await callClaudeJSON(
-          `Business name: "${name}"\nCity: ${settings.city}\nIndustry: ${settings.niche}\n\nAnalyze their likely web presence and return the JSON object.`,
+          `Business name: "${name}"\nCity: ${settings.city}\nIndustry: ${settings.niche}\n\nReal web search results for this business:\n${searchContext}\n\nAnalyze these REAL search results and return the JSON object. Remember: only include an email if it literally appears in the search results above.`,
           SCORE_SYSTEM
         );
+        const verifiedEmail = verifyEmailInSearchResults(scoreData.email, searchData);
+        scoreData.email = verifiedEmail;
         const score = scoreData.score || 0;
-        addBulkLog(score >= 60 ? "hit" : "miss", `  ↳ Score: ${score} ${scoreLabel(score)}`);
+        addBulkLog(score >= 60 ? "hit" : "miss", `  ↳ Score: ${score} ${scoreLabel(score)}${verifiedEmail ? ` | 📧 ${verifiedEmail}` : ""}`);
 
-        const lead = { name, city: settings.city, niche: settings.niche, phone: "" };
+        const lead = { name, city: settings.city, niche: settings.niche, phone: "", email: verifiedEmail };
         const demoLink = buildDemoLink(lead);
         addBulkLog("info","  ↳ Building demo & writing email...");
         const rawEmail = await callClaude(
@@ -536,6 +587,8 @@ export default function App() {
                             try {
                               await sendRealEmail(recipientEmail.trim(), manualEmail, manualResult?.name);
                               setSendStatus({ ok: true, msg: `✅ Sent to ${recipientEmail.trim()} · follow-up scheduled in 3 days` });
+                              setManualWasSent(true);
+                              setManualSentTo(recipientEmail.trim());
                             } catch(e) {
                               setSendStatus({ ok: false, msg: `❌ ${e.message}` });
                             }

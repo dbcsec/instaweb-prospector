@@ -70,7 +70,11 @@ async function tryGemini(system, messages, max_tokens) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: fullPrompt }] }],
-        generationConfig: { maxOutputTokens: max_tokens || 1000, temperature: 0.7 },
+        generationConfig: {
+          maxOutputTokens: max_tokens || 1000,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     }
   );
@@ -80,7 +84,11 @@ async function tryGemini(system, messages, max_tokens) {
     err.isRateLimit = /rate limit|quota/i.test(data.error.message || "");
     throw err;
   }
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const candidate = data.candidates?.[0];
+  if (candidate?.finishReason === "MAX_TOKENS" && !candidate?.content?.parts?.[0]?.text) {
+    throw new Error("Gemini hit MAX_TOKENS with no output — increase max_tokens");
+  }
+  return candidate?.content?.parts?.[0]?.text || "";
 }
 
 export default async function handler(req, res) {
