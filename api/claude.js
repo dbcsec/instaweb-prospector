@@ -109,15 +109,19 @@ export default async function handler(req, res) {
     for (const provider of providers) {
       try {
         const text = await provider.fn(system, messages, max_tokens);
+        if (!text || !text.trim()) {
+          throw new Error(`${provider.name} returned empty response`);
+        }
         return res.status(200).json({
           content: [{ type: "text", text }],
           provider: provider.name,
         });
       } catch (err) {
         lastError = err;
-        // Only fall through to next provider on rate limit or missing key;
+        // Only fall through to next provider on rate limit, missing key, or empty response;
         // other errors (bad request, etc.) should surface immediately.
-        if (!err.isRateLimit && !err.message.includes("not set")) {
+        const isEmptyResponse = /returned empty response/.test(err.message);
+        if (!err.isRateLimit && !err.message.includes("not set") && !isEmptyResponse) {
           return res.status(400).json({ error: `${provider.name}: ${err.message}` });
         }
         // else continue to next provider

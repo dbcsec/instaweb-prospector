@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ODOT_LEADS } from "./odotLeads.js";
 
 const PIPELINE_KEY = "instaweb-pipeline-v5";
 const SETTINGS_KEY = "instaweb-settings-v3";
@@ -61,6 +62,38 @@ const verifyEmailInSearchResults = (claimedEmail, searchData) => {
   return allText.includes(claimedEmail) ? claimedEmail : null;
 };
 
+// Runs up to 3 targeted searches to find a real published contact email
+const findContactEmail = async (businessName, city) => {
+  const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const clean = (text) => {
+    const matches = (text || "").match(EMAIL_RE) || [];
+    return matches.filter(m =>
+      !/\.(png|jpg|jpeg|gif|svg|webp)$/i.test(m) &&
+      !/^(no-?reply|donotreply|example|noreply|privacy|legal|sentry|wix|squarespace|wordpress|godaddy)@/i.test(m) &&
+      !/@(sentry\.io|wixpress\.com|squarespace\.com|wordpress\.com|godaddy\.com|amazonaws\.com|example\.com)$/i.test(m)
+    );
+  };
+  const pick = (emails) => {
+    // Prefer personal/owner emails over generic info@
+    const personal = emails.find(m => !/^(info|contact|admin|hello|mail|office|web|webmaster|billing|support)@/i.test(m));
+    return personal || emails[0] || null;
+  };
+  try {
+    // Search 1: direct email lookup
+    const s1 = await realWebSearch(`"${businessName}" ${city} email`);
+    const e1 = pick(clean(JSON.stringify(s1.results || [])));
+    if (e1) return e1;
+    // Search 2: contact page
+    const s2 = await realWebSearch(`${businessName} ${city} contact email`);
+    const e2 = pick(clean(JSON.stringify(s2.results || [])));
+    if (e2) return e2;
+    // Search 3: knowledge graph
+    const kg = s1.knowledgeGraph;
+    if (kg) { const e3 = pick(clean(JSON.stringify(kg))); if (e3) return e3; }
+    return null;
+  } catch { return null; }
+};
+
 const callClaude = async (prompt, system, maxTokens = 1000, retries = 3) => {
   const res = await fetch("/api/claude", {
     method: "POST",
@@ -112,7 +145,7 @@ const callClaudeJSON = async (prompt, system) => {
       } catch {}
     }
   }
-  throw new Error("No JSON in response: " + raw.slice(0, 150));
+  throw new Error(raw.trim() ? `No JSON in response: ${raw.slice(0, 150)}` : "Empty response from all AI providers — likely all rate-limited or daily caps hit");
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -125,7 +158,7 @@ const statusStyle = {
   "Outreach Sent": { bg:"rgba(239,159,39,0.15)",  txt:"#fbbf24" },
   "Negotiating":   { bg:"rgba(127,119,221,0.15)", txt:"#a78bfa" },
   "Active":        { bg:"rgba(16,185,129,0.18)",  txt:"#10b981" },
-  "Closed":        { bg:"rgba(29,158,117,0.15)",  txt:"#34d399" },
+  "Closed":        { bg:"rgba(100,100,110,0.18)", txt:"#a0a0b0" },  // grey — one-time sale, no care plan
   "Lost":          { bg:"rgba(216,90,48,0.15)",   txt:"#f87171" },
 };
 const NICHES = ["Roofing","HVAC","Plumbing","Pest Control","Electrical","Landscaping","Painting","Gutters","Concrete","Windows"];
@@ -133,7 +166,24 @@ const CITIES = ["Portland OR","Beaverton OR","Hillsboro OR","Gresham OR","Lake O
 
 const SCORE_SYSTEM = `You are a web presence analyst for Instaweb, a digital agency that sells $399 websites to local trade businesses. You will be given a business name, city, industry, and REAL web search results for that business. Analyze the search results to determine their actual online presence — do not guess or invent facts not supported by the search results. RULES: Respond with ONLY a JSON object. No text before or after. No markdown. No explanation. If the search results are empty or don't clearly identify the business, set hasWebsite, hasGMB, email, etc. based on absence of evidence (do not invent a plausible business). Return exactly this structure: {"score":75,"hasWebsite":false,"websiteUrl":null,"websiteAge":null,"mobileScore":35,"googleRating":3.8,"reviewCount":12,"hasGMB":true,"socialPresence":"weak","email":null,"redFlags":["No website found","Google listing has no photos","Last review was 2 years ago"],"pitch":"Your competitors are winning jobs online while you rely on word of mouth.","summary":"This business operates purely on referrals with no web presence. A modern site would immediately differentiate them."} CRITICAL RULE FOR EMAIL: only set "email" to a value if a real, complete email address actually appears in the search results text (e.g. info@business.com). If no email appears anywhere in the provided search results, you MUST set "email": null. Never invent, guess, or pattern-match an email address. Score: start at 0, +40 no website, +20 site pre-2018, +15 no GMB, +15 mobile<50, +10 rating<3, +10 no social. Cap 100.`;
 
-const EMAIL_SYSTEM = `You write cold outreach emails for Instaweb (instaweb.agency), a digital agency that builds $399 websites for local trades. Rules: Respond with ONLY the email text. Nothing else. Tone: confident, peer-to-peer, not salesy. Under 150 words. Structure: Subject line, then 3 short paragraphs, then a line that says exactly "See your demo: {{DEMO_LINK}}" (keep that placeholder literally as written, do not replace it), then sign-off. Format: Subject: [subject]\\n\\n[para 1: we built a free demo]\\n\\n[para 2: one specific gap referencing red flags]\\n\\n[para 3: the offer - $399 setup, $99/mo care plan, limited spots]\\n\\nSee your demo: {{DEMO_LINK}}\\n\\n— The Instaweb Team\\nhello@instaweb.agency · instaweb.agency`;
+const EMAIL_SYSTEM = `You write cold outreach emails for Instaweb (instaweb.agency). Output ONLY the email text — no preamble, no notes, nothing else. Tone: confident, peer-to-peer, not salesy. Under 180 words total.
+
+Use this exact structure and do not change the dollar amounts:
+
+Subject: [compelling subject line mentioning their specific business name]
+
+[1 sentence: we already built a free personalized demo site for them, it is ready to view right now]
+
+[1-2 sentences: name one specific weakness from their red flags, tied to their business type and city]
+
+A custom build like this typically runs $2,500+. Because we are currently expanding our portfolio in the [City] [Niche] market, we are offering a one-time Activation Fee of just $399 — plus a $99/mo Care Plan that covers hosting, security monitoring, monthly performance reports showing exactly who visited their site, and unlimited updates. Simple Stripe auto-pay, zero invoicing hassle.
+
+See your demo: {{DEMO_LINK}}
+
+P.S. Ask about our AI Receptionist add-on ($149/mo) — your site captures the lead while you are on the job, the AI books the appointment automatically.
+
+— The Instaweb Team
+hello@instaweb.agency · instaweb.agency`
 
 const BIZ_PREFIXES = ["Pacific","Cascade","Summit","Northwest","Apex","Premier","Elite","Reliable","Pro","Quality","Eagle","Sunrise","Evergreen","Sterling","Iron","Peak","Valley","Heritage","True","Precision","Cornerstone","Benchmark"];
 const BIZ_SUFFIXES = {
@@ -157,6 +207,17 @@ const genBizName = (niche) => {
 export default function App() {
   const [tab, setTab] = useState("agent");
   const [pipeline, setPipeline] = useState([]);
+
+  // Real Leads tab state
+  const [realLeadsSearch, setRealLeadsSearch] = useState("");
+  const [realLeadsFilter, setRealLeadsFilter] = useState("All");
+  const [realLeadsSelected, setRealLeadsSelected] = useState(new Set());
+  const [processingReal, setProcessingReal] = useState(false);
+  const [realLeadsLog, setRealLeadsLog] = useState([]);
+  const realLeadsLogEndRef = useRef(null);
+
+  // No-email review tab state
+  const [noEmailLeads, setNoEmailLeads] = useState([]);
   const [settings, setSettings] = useState({ niche:"Roofing", city:"Portland OR" });
 
   const [manualName, setManualName] = useState("");
@@ -252,6 +313,116 @@ export default function App() {
   };
 
 
+  // ─── Google Maps scraper (via Serper) ────────────────────────────────────────
+  const scrapeGoogleMaps = async (niche, city) => {
+    const queries = [
+      `${niche} contractors ${city} site:google.com/maps OR site:yelp.com`,
+      `${niche} company ${city} "no website" OR "see menu" email phone`,
+      `"${niche}" "${city}" contractor email contact`,
+    ];
+    const results = [];
+    for (const q of queries) {
+      const data = await realWebSearch(q);
+      if (data.results) {
+        for (const r of data.results) {
+          // Extract phone numbers and emails from snippets
+          const phones = (r.snippet || "").match(/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g) || [];
+          const emails = (r.snippet || "").match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+          if (r.title && (phones.length || emails.length)) {
+            results.push({
+              name: r.title.replace(/ - Google Maps$| \| Yelp$/i, "").trim(),
+              phone: phones[0] || "",
+              email: emails[0] || "",
+              source: "Google Maps Scrape",
+              link: r.link,
+            });
+          }
+        }
+      }
+    }
+    // Deduplicate by name
+    const seen = new Set();
+    return results.filter(r => { if (seen.has(r.name)) return false; seen.add(r.name); return true; });
+  };
+
+  // ─── Process real ODOT leads into pipeline ───────────────────────────────────
+  const processRealLeads = async (leads) => {
+    setProcessingReal(true);
+    setRealLeadsLog([]);
+    const addRL = (type, msg) => setRealLeadsLog(prev => [...prev, { type, msg, ts: new Date().toLocaleTimeString() }]);
+    addRL("info", `🚀 Processing ${leads.length} real leads...`);
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i];
+      addRL("search", `[${i+1}/${leads.length}] Scoring: "${lead.name}" (${lead.city})...`);
+      try {
+        const searchData = await realWebSearch(`${lead.name} ${lead.city} website`);
+        const searchContext = JSON.stringify(searchData.results || []);
+        const scoreData = await callClaudeJSON(
+          `Business name: "${lead.name}"\nCity: ${lead.city}\nIndustry: ${lead.niche}\n\nReal web search results:\n${searchContext}\n\nAnalyze and return the JSON object.`,
+          SCORE_SYSTEM
+        );
+        const score = scoreData.score || 0;
+        addRL(score >= 50 ? "hit" : "miss", `  ↳ Score: ${score} ${scoreLabel(score)} | Website: ${scoreData.hasWebsite ? "Yes" : "❌ None"}`);
+
+        // Use known email first, fall back to search
+        let contactEmail = lead.email || "";
+        if (!contactEmail) {
+          addRL("info", `  ↳ Searching for contact email...`);
+          contactEmail = await findContactEmail(lead.name, lead.city) || "";
+          if (contactEmail) addRL("hit", `  ↳ 📧 Found: ${contactEmail}`);
+          else addRL("miss", `  ↳ No public email found`);
+        } else {
+          addRL("hit", `  ↳ 📧 Email from ODOT records: ${contactEmail}`);
+        }
+
+        const demoLink = buildDemoLink({ name: lead.name, city: lead.city, phone: lead.phone || "", niche: lead.niche || settings.niche });
+        const rawEmail = await callClaude(
+          `Business: ${lead.name}\nCity: ${lead.city}\nNiche: ${lead.niche}\nRed flags: ${(scoreData.redFlags||[]).join(", ")}\nPitch: ${scoreData.pitch}`,
+          EMAIL_SYSTEM, 500
+        );
+        const emailText = fillEmailLink(rawEmail, demoLink);
+
+        // Auto-send if email found
+        let sentStatus = null;
+        if (contactEmail && emailText) {
+          addRL("info", `  ↳ 📤 Sending email pitch to ${contactEmail}...`);
+          try {
+            await sendRealEmail(contactEmail, emailText, lead.name);
+            sentStatus = "sent";
+            addRL("success", `  ↳ ✅ Email pitch sent · follow-up in 3 days`);
+          } catch(e) {
+            addRL("warn", `  ↳ ❌ Send failed: ${e.message}`);
+          }
+        }
+
+        // Move to no-email list if no email found
+        if (!contactEmail) {
+          setNoEmailLeads(prev => [...prev, { ...lead, score, needsEmailReview: true }]);
+          addRL("warn", `  ↳ Moved to "Needs Email Review" tab`);
+        } else {
+          updatePipeline(prev => [{
+            id: Date.now() + Math.random(),
+            name: lead.name, city: lead.city, niche: lead.niche || settings.niche,
+            phone: lead.phone || "", score,
+            hasWebsite: scoreData.hasWebsite, websiteUrl: scoreData.websiteUrl,
+            googleRating: scoreData.googleRating, reviewCount: scoreData.reviewCount,
+            redFlags: scoreData.redFlags || [], pitch: scoreData.pitch, summary: scoreData.summary,
+            email: emailText, demoLink, recipientEmail: contactEmail,
+            _sendStatus: sentStatus === "sent" ? `✅ Email pitch sent to ${contactEmail} · follow-up in 3 days` : null,
+            status: sentStatus === "sent" ? "Outreach Sent" : "Demo Built",
+            source: lead.source || "ODOT", addedAt: new Date().toISOString(),
+          }, ...prev]);
+        }
+        addRL("success", `  ✅ Done (${i+1}/${leads.length})`);
+        await new Promise(r => setTimeout(r, 2500));
+      } catch(e) {
+        addRL("warn", `  ↳ Error: ${e.message}`);
+      }
+    }
+    setProcessingReal(false);
+    addRL("success", `🎯 Complete! Check Pipeline and "Needs Email Review" tabs.`);
+  };
+
   // ─── Agent ─────────────────────────────────────────────────────────────────
   const runAgent = async () => {
     if (agentRunning) { agentRef.current = false; setAgentRunning(false); addLog("warn","Stopped."); return; }
@@ -280,23 +451,50 @@ export default function App() {
         const lead = { name: bizName, city: settings.city, niche: settings.niche, phone: "" };
         const demoLink = buildDemoLink(lead);
 
-        addLog("info","  ↳ Building demo site & writing outreach email...");
+        // Search for real contact email before building anything
+        addLog("info","  ↳ Searching for contact email...");
+        const foundEmail = await findContactEmail(bizName, settings.city);
+        if (foundEmail) {
+          addLog("hit", `  ↳ 📧 Found: ${foundEmail}`);
+        } else {
+          addLog("miss","  ↳ No public email found — will need manual entry to send");
+        }
+
+        addLog("info","  ↳ Writing personalized outreach email...");
         const rawEmail = await callClaude(
           `Business: ${bizName}\nCity: ${settings.city}\nNiche: ${settings.niche}\nRed flags: ${(scoreData.redFlags||[]).join(", ")}\nPitch: ${scoreData.pitch}`,
           EMAIL_SYSTEM, 500
         );
         const emailText = fillEmailLink(rawEmail, demoLink);
 
+        // Auto-send if we found a real email
+        let sentStatus = null;
+        if (foundEmail && emailText) {
+          addLog("info", `  ↳ 📤 Sending email pitch to ${foundEmail}...`);
+          try {
+            await sendRealEmail(foundEmail, emailText, bizName);
+            sentStatus = "sent";
+            addLog("success", `  ↳ ✅ Email pitch sent · follow-up scheduled in 3 days`);
+          } catch(sendErr) {
+            sentStatus = "failed";
+            addLog("warn", `  ↳ ❌ Send failed: ${sendErr.message}`);
+          }
+        }
+
         updatePipeline(prev => [{
           id: Date.now() + Math.random(),
           ...lead, score, hasWebsite: scoreData.hasWebsite, websiteUrl: scoreData.websiteUrl,
           googleRating: scoreData.googleRating, reviewCount: scoreData.reviewCount,
           redFlags: scoreData.redFlags || [], pitch: scoreData.pitch, summary: scoreData.summary,
-          email: emailText, demoLink, status: "Demo Built", source: "Agent", addedAt: new Date().toISOString(),
+          email: emailText, demoLink,
+          recipientEmail: foundEmail || "",
+          _sendStatus: sentStatus === "sent" ? "✅ Email pitch sent · follow-up in 3 days" : null,
+          status: sentStatus === "sent" ? "Outreach Sent" : "Demo Built",
+          source: "Agent", addedAt: new Date().toISOString(),
         }, ...prev]);
         found++;
         setAgentCount(found);
-        addLog("success", `  ✅ Added with live demo! (${found}/${agentTarget}) — "${bizName}"`);
+        addLog("success", `  ✅ Pipeline updated (${found}/${agentTarget}) — "${bizName}"${foundEmail ? (sentStatus === "sent" ? " · emailed" : " · 📧 has email, send from pipeline") : ""}`);
         await new Promise(r => setTimeout(r, 2500));
       } catch(e) {
         addLog("warn", `  ↳ Error: ${e.message}`);
@@ -484,7 +682,7 @@ export default function App() {
         </div>
 
         <div style={s.tabs}>
-          {[["agent","🤖 Agent"],["manual","🎯 Manual"],["bulk","📝 Bulk"],["pipeline",`📋 Pipeline (${pipeline.length})`]].map(([id,label])=>(
+          {[["agent","🤖 Agent"],["realleads",`📋 Real Leads (${ODOT_LEADS.length})`],["manual","🎯 Manual"],["bulk","📝 Bulk"],["pipeline",`📊 Pipeline (${pipeline.length})`],["noemail",`⚠️ Needs Email (${noEmailLeads.length})`]].map(([id,label])=>(
             <button key={id} style={s.tab(tab===id)} onClick={()=>setTab(id)}>{label}</button>
           ))}
         </div>
@@ -586,7 +784,7 @@ export default function App() {
                             setSendingEmail(true); setSendStatus(null);
                             try {
                               await sendRealEmail(recipientEmail.trim(), manualEmail, manualResult?.name);
-                              setSendStatus({ ok: true, msg: `✅ Sent to ${recipientEmail.trim()} · follow-up scheduled in 3 days` });
+                              setSendStatus({ ok: true, msg: `✅ Email pitch sent to ${recipientEmail.trim()} · follow-up scheduled in 3 days` });
                               setManualWasSent(true);
                               setManualSentTo(recipientEmail.trim());
                             } catch(e) {
@@ -595,7 +793,7 @@ export default function App() {
                             setSendingEmail(false);
                           }}
                         >
-                          {sendingEmail ? "📤 Sending..." : "📤 Send Real Email"}
+                          {sendingEmail ? "📤 Sending email pitch..." : "📤 Send Email Pitch"}
                         </button>
                       </div>
                       {sendStatus && (
@@ -682,12 +880,12 @@ export default function App() {
                                 style={{...s.ghost,fontSize:11,color:"#60a5fa",opacity:lead._sending?0.6:1}}
                                 disabled={lead._sending || !lead.recipientEmail?.trim()}
                                 onClick={async ()=>{
-                                  updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:true,_sendStatus:null}:l));
+                                  updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:true,_sendStatus:"📤 Sending email pitch..."}:l));
                                   try {
                                     await sendRealEmail(lead.recipientEmail.trim(), lead.email, lead.name);
-                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"✅ Sent + follow-up in 3d",status: l.status==="New"||l.status==="Demo Built" ? "Outreach Sent" : l.status}:l));
+                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"✅ Email pitch sent · follow-up in 3 days",status: l.status==="New"||l.status==="Demo Built" ? "Outreach Sent" : l.status}:l));
                                   } catch(e) {
-                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"❌ "+e.message}:l));
+                                    updatePipeline(prev=>prev.map(l=>l.id===lead.id?{...l,_sending:false,_sendStatus:"❌ Send failed: "+e.message}:l));
                                   }
                                 }}
                               >
@@ -709,6 +907,141 @@ export default function App() {
                   ))}
                 </div>
             }
+          </div>
+        )}
+
+        {/* ─── REAL LEADS TAB ─────────────────────────────────────────── */}
+        {tab==="realleads" && (
+          <div>
+            <div style={s.card}>
+              <div style={{fontSize:16,fontWeight:500,fontFamily:"'DM Serif Display',serif",marginBottom:6}}>Real Oregon Contractor Leads</div>
+              <div style={{fontSize:13,color:C.muted,marginBottom:"1rem",lineHeight:1.6}}>
+                {ODOT_LEADS.length} verified contractors from ODOT prequalified list — all with real emails. Select leads to score, build demos, and auto-send outreach.
+                Also search Google Maps for additional leads in any niche/city.
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:"1rem"}}>
+                <input style={{...s.inp,flex:1,minWidth:160}} placeholder="Search by name, city, niche..." value={realLeadsSearch} onChange={e=>setRealLeadsSearch(e.target.value)}/>
+                <select style={{...s.sel,width:"auto"}} value={realLeadsFilter} onChange={e=>setRealLeadsFilter(e.target.value)}>
+                  <option value="All">All Niches</option>
+                  {[...new Set(ODOT_LEADS.map(l=>l.niche))].sort().map(n=><option key={n}>{n}</option>)}
+                </select>
+              </div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:"1rem",alignItems:"center"}}>
+                <span style={{fontSize:12,color:C.muted}}>{realLeadsSelected.size} selected</span>
+                <button style={s.ghost} onClick={()=>{
+                  const visible = ODOT_LEADS.filter(l=>{
+                    const s2=realLeadsSearch.toLowerCase();
+                    return (!s2||l.name.toLowerCase().includes(s2)||l.city.toLowerCase().includes(s2)||l.niche.toLowerCase().includes(s2))&&(realLeadsFilter==="All"||l.niche===realLeadsFilter);
+                  });
+                  setRealLeadsSelected(new Set(visible.map(l=>l.id)));
+                }}>Select All Visible</button>
+                <button style={s.ghost} onClick={()=>setRealLeadsSelected(new Set())}>Clear</button>
+                <div style={{flex:1}}/>
+                <button
+                  style={s.btn(processingReal?"#D85A30":C.accent, realLeadsSelected.size===0&&!processingReal)}
+                  disabled={realLeadsSelected.size===0&&!processingReal}
+                  onClick={()=>{
+                    if (processingReal) return;
+                    const toProcess = ODOT_LEADS.filter(l=>realLeadsSelected.has(l.id));
+                    processRealLeads(toProcess);
+                  }}
+                >
+                  {processingReal ? "⏳ Processing..." : `⚡ Process ${realLeadsSelected.size} Selected`}
+                </button>
+              </div>
+            </div>
+
+            {(processingReal || realLeadsLog.length > 0) && (
+              <div style={{...s.card,marginBottom:12}}>
+                <div style={{background:C.surf2,borderRadius:10,padding:"0.9rem",maxHeight:220,overflowY:"auto",border:`0.5px solid ${C.border}`}}>
+                  {realLeadsLog.map((e,i)=>{
+                    const colors={hit:"#34d399",miss:"#6b7280",success:"#34d399",warn:"#fbbf24",info:"#60a5fa",search:"#a78bfa"};
+                    return <div key={i} style={{fontSize:12,padding:"2px 0",color:colors[e.type]||C.muted,lineHeight:1.6,fontFamily:"monospace"}}><span style={{color:"#374151",marginRight:8}}>{e.ts}</span>{e.msg}</div>;
+                  })}
+                  <div ref={realLeadsLogEndRef}/>
+                </div>
+              </div>
+            )}
+
+            <div style={s.card}>
+              {ODOT_LEADS.filter(l=>{
+                const s2=realLeadsSearch.toLowerCase();
+                return (!s2||l.name.toLowerCase().includes(s2)||l.city.toLowerCase().includes(s2)||l.niche.toLowerCase().includes(s2))&&(realLeadsFilter==="All"||l.niche===realLeadsFilter);
+              }).map((lead,i,arr)=>(
+                <div key={lead.id} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 0",borderBottom:i===arr.length-1?"none":`0.5px solid ${C.border}`}}>
+                  <input type="checkbox" checked={realLeadsSelected.has(lead.id)} onChange={e=>{
+                    const next=new Set(realLeadsSelected);
+                    e.target.checked?next.add(lead.id):next.delete(lead.id);
+                    setRealLeadsSelected(next);
+                  }} style={{flexShrink:0,width:15,height:15,accentColor:C.accent}}/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      <span style={{fontSize:14,fontWeight:500}}>{lead.name}</span>
+                      <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(96,165,250,0.12)",color:"#60a5fa"}}>{lead.niche}</span>
+                      {lead.email && <span style={{fontSize:11,padding:"2px 7px",borderRadius:20,background:"rgba(52,211,153,0.12)",color:"#34d399"}}>📧 Email</span>}
+                    </div>
+                    <div style={{fontSize:12,color:C.muted,marginTop:2}}>{lead.city} · {lead.phone}</div>
+                    {lead.email && <div style={{fontSize:11,color:"#60a5fa",marginTop:2}}>{lead.email}</div>}
+                  </div>
+                  <span style={{fontSize:11,color:C.muted,flexShrink:0}}>{lead.source}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── NO EMAIL REVIEW TAB ────────────────────────────────────── */}
+        {tab==="noemail" && (
+          <div>
+            <div style={s.card}>
+              <div style={{fontSize:16,fontWeight:500,fontFamily:"'DM Serif Display',serif",marginBottom:6}}>⚠️ Needs Email Review</div>
+              <div style={{fontSize:13,color:C.muted,marginBottom:"1rem",lineHeight:1.6}}>
+                These leads have been scored and demoed but no public email was found. Add an email manually (call them, check their website) then send from here.
+              </div>
+              {noEmailLeads.length === 0
+                ? <div style={{textAlign:"center",padding:"2rem",color:C.muted}}>No leads awaiting email review.</div>
+                : noEmailLeads.map((lead,i)=>(
+                  <div key={i} style={{display:"flex",alignItems:"flex-start",gap:12,padding:"12px 0",borderBottom:i===noEmailLeads.length-1?"none":`0.5px solid ${C.border}`}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:14,fontWeight:500,marginBottom:3}}>{lead.name}</div>
+                      <div style={{fontSize:12,color:C.muted,marginBottom:6}}>{lead.niche} · {lead.city} · {lead.phone}</div>
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                        <input
+                          style={{...s.inp,flex:1,minWidth:180,fontSize:12,padding:"6px 10px"}}
+                          placeholder="Enter email manually..."
+                          value={lead._manualEmail||""}
+                          onChange={e=>setNoEmailLeads(prev=>prev.map((l,j)=>j===i?{...l,_manualEmail:e.target.value}:l))}
+                        />
+                        <button
+                          style={{...s.ghost,fontSize:11,color:"#34d399"}}
+                          disabled={!lead._manualEmail?.trim()}
+                          onClick={async()=>{
+                            const email = lead._manualEmail.trim();
+                            const demoLink = buildDemoLink({name:lead.name,city:lead.city,phone:lead.phone||"",niche:lead.niche||settings.niche});
+                            // Move to pipeline with the manually entered email
+                            updatePipeline(prev=>[{
+                              id:Date.now()+Math.random(),
+                              ...lead, email:lead.email||"", demoLink, recipientEmail:email,
+                              status:"Demo Built", addedAt:new Date().toISOString(),
+                            },...prev]);
+                            setNoEmailLeads(prev=>prev.filter((_,j)=>j!==i));
+                            setTab("pipeline");
+                          }}
+                        >
+                          ➕ Add to Pipeline
+                        </button>
+                        <button
+                          style={{...s.ghost,fontSize:11,color:"#f87171"}}
+                          onClick={()=>setNoEmailLeads(prev=>prev.filter((_,j)=>j!==i))}
+                        >
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              }
+            </div>
           </div>
         )}
       </div>
