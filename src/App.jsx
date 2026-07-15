@@ -166,9 +166,7 @@ const CITIES = ["Portland OR","Beaverton OR","Hillsboro OR","Gresham OR","Lake O
 
 const SCORE_SYSTEM = `You are a web presence analyst for Instaweb, a digital agency that sells $399 websites to local trade businesses. You will be given a business name, city, industry, and REAL web search results for that business. Analyze the search results to determine their actual online presence — do not guess or invent facts not supported by the search results. RULES: Respond with ONLY a JSON object. No text before or after. No markdown. No explanation. If the search results are empty or don't clearly identify the business, set hasWebsite, hasGMB, email, etc. based on absence of evidence (do not invent a plausible business). Return exactly this structure: {"score":75,"hasWebsite":false,"websiteUrl":null,"websiteAge":null,"mobileScore":35,"googleRating":3.8,"reviewCount":12,"hasGMB":true,"socialPresence":"weak","email":null,"redFlags":["No website found","Google listing has no photos","Last review was 2 years ago"],"pitch":"Your competitors are winning jobs online while you rely on word of mouth.","summary":"This business operates purely on referrals with no web presence. A modern site would immediately differentiate them."} CRITICAL RULE FOR EMAIL: only set "email" to a value if a real, complete email address actually appears in the search results text (e.g. info@business.com). If no email appears anywhere in the provided search results, you MUST set "email": null. Never invent, guess, or pattern-match an email address. Score: start at 0, +40 no website, +20 site pre-2018, +15 no GMB, +15 mobile<50, +10 rating<3, +10 no social. Cap 100.`;
 
-const EMAIL_SYSTEM = `You write cold outreach emails for Instaweb (instaweb.agency). Output ONLY the email text — no preamble, no notes, nothing else. Tone: confident, peer-to-peer, not salesy. Under 180 words total.
-
-Use this exact structure and do not change the dollar amounts:
+const EMAIL_SYSTEM = `You write cold outreach emails for Instaweb (instaweb.agency). Output ONLY the complete email text — no preamble, no notes. Tone: confident, peer-to-peer, not salesy. CRITICAL: you must include every section below in full — do not cut the email short.
 
 Subject: [compelling subject line mentioning their specific business name]
 
@@ -176,11 +174,11 @@ Subject: [compelling subject line mentioning their specific business name]
 
 [1-2 sentences: name one specific weakness from their red flags, tied to their business type and city]
 
-A custom build like this typically runs $2,500+. Because we are currently expanding our portfolio in the [City] [Niche] market, we are offering a one-time Activation Fee of just $399 — plus a $99/mo Care Plan that covers hosting, security monitoring, monthly performance reports showing exactly who visited their site, and unlimited updates. Simple Stripe auto-pay, zero invoicing hassle.
+A custom build like this typically runs $2,500+. Because we are currently expanding our portfolio in the [City] [Niche] market, we are offering a one-time Activation Fee of just $399 — plus a $99/mo Care Plan covering hosting, security monitoring, monthly performance reports, and unlimited updates. Simple Stripe auto-pay, no invoicing hassle.
 
 See your demo: {{DEMO_LINK}}
 
-P.S. Ask about our AI Receptionist add-on ($149/mo) — your site captures the lead while you are on the job, the AI books the appointment automatically.
+P.S. Ask about our AI Receptionist add-on ($149/mo) — your site captures the lead while you're on the job, the AI books the appointment automatically.
 
 — The Instaweb Team
 hello@instaweb.agency · instaweb.agency`
@@ -392,7 +390,7 @@ export default function App() {
         const demoLink = buildDemoLink({ name: lead.name, city: lead.city, phone: lead.phone || "", niche: lead.niche || settings.niche });
         const rawEmail = await callClaude(
           `Business: ${lead.name}\nCity: ${lead.city}\nNiche: ${lead.niche}\nRed flags: ${(scoreData.redFlags||[]).join(", ")}\nPitch: ${scoreData.pitch}`,
-          EMAIL_SYSTEM, 500
+          EMAIL_SYSTEM, 800
         );
         const emailText = fillEmailLink(rawEmail, demoLink);
 
@@ -477,7 +475,7 @@ export default function App() {
         addLog("info","  ↳ Writing personalized outreach email...");
         const rawEmail = await callClaude(
           `Business: ${bizName}\nCity: ${settings.city}\nNiche: ${settings.niche}\nRed flags: ${(scoreData.redFlags||[]).join(", ")}\nPitch: ${scoreData.pitch}`,
-          EMAIL_SYSTEM, 500
+          EMAIL_SYSTEM, 800
         );
         const emailText = fillEmailLink(rawEmail, demoLink);
 
@@ -550,7 +548,7 @@ export default function App() {
       setManualDemoLink(demoLink);
       const rawEmail = await callClaude(
         `Business: ${manualResult.name}\nCity: ${manualResult.city}\nNiche: ${manualResult.niche}\nRed flags: ${(manualResult.redFlags||[]).join(", ")}\nPitch: ${manualResult.pitch}`,
-        EMAIL_SYSTEM, 500
+        EMAIL_SYSTEM, 800
       );
       setManualEmail(fillEmailLink(rawEmail, demoLink));
     } catch(e) { alert("Email generation failed: " + e.message); }
@@ -607,7 +605,7 @@ export default function App() {
         addBulkLog("info","  ↳ Building demo & writing email...");
         const rawEmail = await callClaude(
           `Business: ${name}\nCity: ${settings.city}\nNiche: ${settings.niche}\nRed flags: ${(scoreData.redFlags||[]).join(", ")}\nPitch: ${scoreData.pitch}`,
-          EMAIL_SYSTEM, 500
+          EMAIL_SYSTEM, 800
         );
         const emailText = fillEmailLink(rawEmail, demoLink);
 
