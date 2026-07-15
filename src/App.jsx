@@ -274,17 +274,31 @@ export default function App() {
     (emailText || "").replace(/\{\{DEMO_LINK\}\}/g, demoLink);
 
   const parseEmailParts = (emailText) => {
-    const lines = (emailText || "").split("\n");
-    const subjectLine = lines.find(l => l.toLowerCase().startsWith("subject:"));
-    const subject = subjectLine ? subjectLine.replace(/subject:\s*/i, "").trim() : "Your new website is ready";
-    const body = subjectLine
-      ? emailText.slice(emailText.indexOf(subjectLine) + subjectLine.length).trim()
-      : emailText;
+    const text = (emailText || "").trim();
+    const lines = text.split("\n");
+    const subjectLineIdx = lines.findIndex(l => l.toLowerCase().startsWith("subject:"));
+    if (subjectLineIdx === -1) {
+      // No subject line found — use default subject, entire text as body
+      return { subject: "We built a free website demo for you", body: text };
+    }
+    const subject = lines[subjectLineIdx].replace(/subject:\s*/i, "").trim() || "We built a free website demo for you";
+    // Body is everything after the subject line, skip leading blank lines
+    const bodyLines = lines.slice(subjectLineIdx + 1);
+    const body = bodyLines.join("\n").trim();
+    if (!body) {
+      // Body came back empty — return full text as body to avoid the "Missing required fields" error
+      return { subject, body: text };
+    }
     return { subject, body };
   };
 
   const sendRealEmail = async (toEmail, emailText, businessName) => {
     const { subject, body } = parseEmailParts(emailText);
+
+    // Guard: never send if we'd get a 400 back
+    if (!toEmail?.trim()) throw new Error("No recipient email address");
+    if (!subject?.trim()) throw new Error("Email subject is empty");
+    if (!body?.trim()) throw new Error("Email body is empty");
 
     // Send the initial email immediately
     const res = await fetch("/api/send-email", {
