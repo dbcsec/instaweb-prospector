@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Instaweb Admin — API Keys</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0d0d0f;color:#f0ede8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:24px;max-width:640px;margin:0 auto;}
+  .logo{font-size:18px;font-weight:700;margin-bottom:4px;letter-spacing:-0.5px;}
+  .logo span{color:#1D9E75;}
+  .subtitle{font-size:12px;color:#6b7280;margin-bottom:28px;}
+  .card{background:#16161a;border:0.5px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;}
+  .card-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#6b7280;margin-bottom:16px;}
+  label{font-size:12px;font-weight:500;color:#9ca3af;display:block;margin-bottom:6px;}
+  input,select{width:100%;background:#0d0d0f;border:0.5px solid rgba(255,255,255,0.12);border-radius:8px;color:#f0ede8;font-size:14px;padding:10px 12px;outline:none;transition:border-color 0.2s;margin-bottom:12px;}
+  input:focus,select:focus{border-color:#1D9E75;}
+  input[type=password]{letter-spacing:0.1em;}
+  .btn{width:100%;background:#1D9E75;color:#fff;font-size:14px;font-weight:600;border:none;border-radius:8px;padding:12px;cursor:pointer;transition:opacity 0.2s;margin-top:4px;}
+  .btn:hover{opacity:0.85;}
+  .btn:disabled{opacity:0.4;cursor:not-allowed;}
+  .btn-secondary{background:#16161a;border:0.5px solid rgba(255,255,255,0.12);color:#9ca3af;}
+  .btn-secondary:hover{color:#f0ede8;opacity:1;border-color:rgba(255,255,255,0.25);}
+  .msg{font-size:13px;padding:10px 14px;border-radius:8px;margin-top:10px;line-height:1.5;}
+  .msg.ok{background:rgba(29,158,117,0.12);color:#34d399;border:0.5px solid rgba(29,158,117,0.25);}
+  .msg.err{background:rgba(239,68,68,0.1);color:#f87171;border:0.5px solid rgba(239,68,68,0.2);}
+  .msg.info{background:rgba(96,165,250,0.1);color:#60a5fa;border:0.5px solid rgba(96,165,250,0.2);}
+  .env-list{list-style:none;}
+  .env-item{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:0.5px solid rgba(255,255,255,0.06);}
+  .env-item:last-child{border-bottom:none;}
+  .env-key{font-size:13px;font-weight:500;font-family:monospace;color:#f0ede8;}
+  .env-meta{font-size:11px;color:#6b7280;margin-top:2px;}
+  .env-edit{font-size:11px;color:#1D9E75;cursor:pointer;background:none;border:none;padding:4px 8px;}
+  .env-edit:hover{text-decoration:underline;}
+  #loginForm,#mainPanel{transition:opacity 0.3s;}
+  .hidden{display:none;}
+  .divider{border:none;border-top:0.5px solid rgba(255,255,255,0.07);margin:4px 0 16px;}
+  .key-list{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
+  .quick-key{display:flex;align-items:center;gap:8px;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);cursor:pointer;transition:border-color 0.2s;}
+  .quick-key:hover{border-color:#1D9E75;}
+  .quick-key.selected{border-color:#1D9E75;background:rgba(29,158,117,0.06);}
+  .qk-name{font-size:13px;font-weight:500;}
+  .qk-desc{font-size:11px;color:#6b7280;}
+  .warning{font-size:11px;color:#fbbf24;background:rgba(251,191,36,0.08);border:0.5px solid rgba(251,191,36,0.2);border-radius:6px;padding:10px 12px;margin-bottom:12px;line-height:1.5;}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:middle;margin-right:6px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+
+<div class="logo">insta<span>web</span> <span style="font-size:12px;font-weight:400;color:#6b7280;">admin</span></div>
+<div class="subtitle">API Key Manager · Secure · Changes deploy automatically</div>
+
+<!-- LOGIN -->
+<div id="loginForm">
+  <div class="card">
+    <div class="card-title">Admin Login</div>
+    <label>Admin Password</label>
+    <input type="password" id="passwordInput" placeholder="Enter admin password" onkeydown="if(event.key==='Enter')login()"/>
+    <button class="btn" onclick="login()" id="loginBtn">Sign In</button>
+    <div id="loginMsg"></div>
+  </div>
+  <div style="font-size:11px;color:#4b5563;text-align:center;margin-top:12px;">
+    Set your admin password: Vercel → Settings → Environment Variables → ADMIN_PASSWORD
+  </div>
+</div>
+
+<!-- MAIN PANEL -->
+<div id="mainPanel" class="hidden">
+
+  <!-- Quick Update -->
+  <div class="card">
+    <div class="card-title">Update an API Key</div>
+    <div class="warning">⚠️ Changing a key triggers an automatic redeploy (~60 seconds). The app will be briefly unavailable.</div>
+
+    <label>Select Key to Update</label>
+    <div class="key-list" id="quickKeyList">
+      <div class="quick-key" onclick="selectKey('GROQ_API_KEY',this)">
+        <div><div class="qk-name">GROQ_API_KEY</div><div class="qk-desc">Primary AI provider — Groq (gpt-oss-120b)</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('GEMINI_API_KEY',this)">
+        <div><div class="qk-name">GEMINI_API_KEY</div><div class="qk-desc">Fallback AI — Google Gemini 2.5 Flash</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('CEREBRAS_API_KEY',this)">
+        <div><div class="qk-name">CEREBRAS_API_KEY</div><div class="qk-desc">Fallback AI — Cerebras Llama 3.3</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('RESEND_API_KEY',this)">
+        <div><div class="qk-name">RESEND_API_KEY</div><div class="qk-desc">Email sending — Resend (hello@instaweb.agency)</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('SERPER_API_KEY',this)">
+        <div><div class="qk-name">SERPER_API_KEY</div><div class="qk-desc">Web search — Serper.dev (2,500 free searches)</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('ADMIN_PASSWORD',this)">
+        <div><div class="qk-name">ADMIN_PASSWORD</div><div class="qk-desc">This admin panel's login password</div></div>
+      </div>
+      <div class="quick-key" onclick="selectKey('_CUSTOM_',this)">
+        <div><div class="qk-name">+ Custom key name</div><div class="qk-desc">Add or update any other environment variable</div></div>
+      </div>
+    </div>
+
+    <div id="updateForm" class="hidden" style="margin-top:16px;">
+      <hr class="divider"/>
+      <label id="keyLabel">Key Name</label>
+      <input type="text" id="keyNameInput" placeholder="KEY_NAME" style="display:none;font-family:monospace;"/>
+      <label>New Value</label>
+      <input type="password" id="keyValueInput" placeholder="Paste new API key here"/>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" onclick="updateKey()" id="updateBtn">Save & Redeploy</button>
+        <button class="btn btn-secondary" onclick="cancelUpdate()" style="width:auto;padding:12px 20px;">Cancel</button>
+      </div>
+      <div id="updateMsg"></div>
+    </div>
+  </div>
+
+  <!-- Current Keys Status -->
+  <div class="card">
+    <div class="card-title">Current Environment Variables <span style="font-size:10px;color:#6b7280;">(names only — values hidden)</span></div>
+    <button class="btn btn-secondary" onclick="loadEnvList()" id="listBtn" style="margin-bottom:12px;">Load from Vercel</button>
+    <ul class="env-list" id="envList">
+      <li style="font-size:13px;color:#6b7280;padding:8px 0;">Click "Load from Vercel" to see current keys</li>
+    </ul>
+    <div id="listMsg"></div>
+  </div>
+
+  <!-- Where to get keys -->
+  <div class="card">
+    <div class="card-title">Where to Get Free API Keys</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <a href="https://console.groq.com" target="_blank" style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);text-decoration:none;color:#f0ede8;">
+        <div><div style="font-size:13px;font-weight:500;">Groq</div><div style="font-size:11px;color:#6b7280;">Free tier · 200k tokens/day · console.groq.com</div></div>
+        <span style="color:#6b7280;font-size:12px;">→</span>
+      </a>
+      <a href="https://aistudio.google.com/apikey" target="_blank" style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);text-decoration:none;color:#f0ede8;">
+        <div><div style="font-size:13px;font-weight:500;">Google Gemini</div><div style="font-size:11px;color:#6b7280;">Free tier · 1,500 req/day · aistudio.google.com</div></div>
+        <span style="color:#6b7280;font-size:12px;">→</span>
+      </a>
+      <a href="https://cloud.cerebras.ai" target="_blank" style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);text-decoration:none;color:#f0ede8;">
+        <div><div style="font-size:13px;font-weight:500;">Cerebras</div><div style="font-size:11px;color:#6b7280;">Free tier · fast inference · cloud.cerebras.ai</div></div>
+        <span style="color:#6b7280;font-size:12px;">→</span>
+      </a>
+      <a href="https://resend.com/api-keys" target="_blank" style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);text-decoration:none;color:#f0ede8;">
+        <div><div style="font-size:13px;font-weight:500;">Resend</div><div style="font-size:11px;color:#6b7280;">Free · 3,000 emails/mo · resend.com/api-keys</div></div>
+        <span style="color:#6b7280;font-size:12px;">→</span>
+      </a>
+      <a href="https://serper.dev" target="_blank" style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:#0d0d0f;border-radius:8px;border:0.5px solid rgba(255,255,255,0.07);text-decoration:none;color:#f0ede8;">
+        <div><div style="font-size:13px;font-weight:500;">Serper.dev</div><div style="font-size:11px;color:#6b7280;">Free · 2,500 searches · serper.dev</div></div>
+        <span style="color:#6b7280;font-size:12px;">→</span>
+      </a>
+    </div>
+  </div>
+
+  <button class="btn btn-secondary" onclick="logout()" style="margin-top:4px;">Sign Out</button>
+</div>
+
+<script>
+let sessionPassword = '';
+let selectedKeyName = '';
+
+async function login() {
+  const pw = document.getElementById('passwordInput').value.trim();
+  if (!pw) return showMsg('loginMsg', 'Enter your admin password', 'err');
+  const btn = document.getElementById('loginBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Checking...';
+  try {
+    const res = await fetch('/api/admin-env', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ password: pw, action: 'list' })
+    });
+    if (res.status === 401) {
+      showMsg('loginMsg', 'Incorrect password', 'err');
+    } else if (res.ok) {
+      sessionPassword = pw;
+      document.getElementById('loginForm').classList.add('hidden');
+      document.getElementById('mainPanel').classList.remove('hidden');
+    } else {
+      const d = await res.json();
+      showMsg('loginMsg', d.error || 'Login failed', 'err');
+    }
+  } catch(e) {
+    showMsg('loginMsg', 'Network error: ' + e.message, 'err');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sign In';
+}
+
+function logout() {
+  sessionPassword = '';
+  document.getElementById('mainPanel').classList.add('hidden');
+  document.getElementById('loginForm').classList.remove('hidden');
+  document.getElementById('passwordInput').value = '';
+}
+
+function selectKey(keyName, el) {
+  document.querySelectorAll('.quick-key').forEach(k => k.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedKeyName = keyName;
+  const form = document.getElementById('updateForm');
+  form.classList.remove('hidden');
+  const keyLabel = document.getElementById('keyLabel');
+  const keyNameInput = document.getElementById('keyNameInput');
+  if (keyName === '_CUSTOM_') {
+    keyLabel.textContent = 'Key Name (type it in)';
+    keyNameInput.style.display = 'block';
+    keyNameInput.value = '';
+    keyNameInput.focus();
+  } else {
+    keyLabel.textContent = `Key: ${keyName}`;
+    keyNameInput.style.display = 'none';
+    keyNameInput.value = keyName;
+    document.getElementById('keyValueInput').focus();
+  }
+  document.getElementById('keyValueInput').value = '';
+  document.getElementById('updateMsg').textContent = '';
+}
+
+function cancelUpdate() {
+  document.getElementById('updateForm').classList.add('hidden');
+  document.querySelectorAll('.quick-key').forEach(k => k.classList.remove('selected'));
+  selectedKeyName = '';
+}
+
+async function updateKey() {
+  const keyName = document.getElementById('keyNameInput').value.trim() || selectedKeyName;
+  const keyValue = document.getElementById('keyValueInput').value.trim();
+  if (!keyName || keyName === '_CUSTOM_') return showMsg('updateMsg', 'Enter a key name', 'err');
+  if (!keyValue) return showMsg('updateMsg', 'Enter a value', 'err');
+  if (keyValue.length < 8) return showMsg('updateMsg', 'Value looks too short — double-check you pasted the full key', 'err');
+
+  const btn = document.getElementById('updateBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Saving & Redeploying...';
+  showMsg('updateMsg', 'Sending to Vercel...', 'info');
+
+  try {
+    const res = await fetch('/api/admin-env', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ password: sessionPassword, action: 'update', key: keyName, value: keyValue })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showMsg('updateMsg', `✅ ${data.message || 'Updated successfully. Redeploy in progress (~60 sec).'}`, 'ok');
+      document.getElementById('keyValueInput').value = '';
+    } else {
+      showMsg('updateMsg', `❌ ${data.error || 'Update failed'}`, 'err');
+    }
+  } catch(e) {
+    showMsg('updateMsg', `Network error: ${e.message}`, 'err');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Save & Redeploy';
+}
+
+async function loadEnvList() {
+  const btn = document.getElementById('listBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Loading...';
+  try {
+    const res = await fetch('/api/admin-env', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ password: sessionPassword, action: 'list' })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showMsg('listMsg', data.error || 'Failed to load', 'err');
+    } else {
+      const list = document.getElementById('envList');
+      list.innerHTML = '';
+      (data.envs || []).sort((a,b) => a.key.localeCompare(b.key)).forEach(env => {
+        const li = document.createElement('li');
+        li.className = 'env-item';
+        const updated = env.updatedAt ? new Date(env.updatedAt).toLocaleDateString() : '—';
+        li.innerHTML = `
+          <div>
+            <div class="env-key">${env.key}</div>
+            <div class="env-meta">Updated: ${updated} · ${env.type}</div>
+          </div>
+          <button class="env-edit" onclick="quickEdit('${env.key}')">Edit</button>
+        `;
+        list.appendChild(li);
+      });
+      if (!data.envs?.length) list.innerHTML = '<li style="font-size:13px;color:#6b7280;padding:8px 0;">No environment variables found</li>';
+    }
+  } catch(e) {
+    showMsg('listMsg', 'Network error: ' + e.message, 'err');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Reload';
+}
+
+function quickEdit(keyName) {
+  // Find and click the matching quick-key, or use custom
+  const allKeys = document.querySelectorAll('.quick-key');
+  let found = false;
+  allKeys.forEach(el => {
+    if (el.textContent.includes(keyName)) {
+      selectKey(keyName, el);
+      found = true;
+    }
+  });
+  if (!found) {
+    // Use custom slot
+    const customEl = document.querySelector('.quick-key:last-child');
+    selectKey('_CUSTOM_', customEl);
+    document.getElementById('keyNameInput').value = keyName;
+  }
+  document.getElementById('updateForm').scrollIntoView({ behavior: 'smooth' });
+}
+
+function showMsg(id, text, type) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = `msg ${type}`;
+  el.textContent = text;
+}
+
+// Allow Enter key in password field
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.activeElement.id === 'passwordInput') login();
+  if (e.key === 'Enter' && document.activeElement.id === 'keyValueInput') updateKey();
+});
+</script>
+</body>
+</html>

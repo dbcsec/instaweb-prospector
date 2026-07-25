@@ -3,6 +3,7 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
+    { "source": "/admin", "destination": "/admin.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
